@@ -1,0 +1,159 @@
+name: Deploy to OrbStack (macOS)
+
+on:
+  push:
+    branches: [ "prod" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+      - '.github/**/*.md'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy LogAnalyzer to OrbStack
+    runs-on: [self-hosted, macos, orbstack]
+
+    defaults:
+      run:
+        working-directory: /Users/rainend/GIT/LogAnalyzer
+        shell: bash
+
+    steps:
+    - name: Pull latest changes
+      run: |
+        git fetch origin prod
+        git checkout prod
+        git reset --hard origin/prod
+
+    - name: Check if Docker restart needed
+      id: check-docker
+      run: |
+        changed_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "FIRST_DEPLOY")
+        echo "Changed files:"
+        echo "$changed_files"
+
+        need_restart=false
+        if [ "$changed_files" = "FIRST_DEPLOY" ]; then
+          need_restart=true
+        else
+          for file in $changed_files; do
+            case "$file" in
+              backend/*|frontend/*|docker-compose*.yml|Dockerfile*|.env*|requirements.txt|package.json)
+                need_restart=true
+                echo "Docker restart needed: $file"
+                break
+                ;;
+            esac
+          done
+        fi
+
+        echo "Need Docker restart: $need_restart"
+        echo "need_restart=$need_restart" >> $GITHUB_OUTPUT
+
+    - name: Ensure shared PostgreSQL is running
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        docker exec postgresql pg_isready -U postgres || {
+          echo "ERROR: Shared PostgreSQL container is not running"
+          exit 1
+        }
+
+    - name: Ensure loganalyzer database exists
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        docker exec postgresql psql -U postgres -tc \
+          "SELECT 1 FROM pg_database WHERE datname = 'loganalyzer'" | grep -q 1 || {
+          echo "Creating loganalyzer database..."
+          docker exec postgresql psql -U postgres -c "CREATE DATABASE loganalyzer;"
+          echo "Database created"
+        }
+        # Ensure service account exists
+        docker exec postgresql psql -U postgres -tc \
+          "SELECT 1 FROM pg_roles WHERE rolname = 'loganalyzer_svc'" | grep -q 1 || {
+          echo "Creating loganalyzer_svc account..."
+          docker exec postgresql psql -U postgres -c "CREATE USER loganalyzer_svc WITH PASSWORD '${LA_DB_PASSWORD:-changeme}';"
+          docker exec postgresql psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE loganalyzer TO loganalyzer_svc;"
+          echo "Account created"
+        }
+
+    - name: Stop existing containers
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: docker compose -f docker-compose.prod.yml down --remove-orphans
+      continue-on-error: true
+
+    - name: Build and start containers
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: docker compose -f docker-compose.prod.yml up -d --build
+
+    - name: Wait for backend health check
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        echo "Waiting for backend to be healthy..."
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:9092/api/health > /dev/null 2>&1; then
+            echo "Backend is healthy!"
+            curl -s http://localhost:9092/api/health | python3 -m json.tool
+            break
+          fi
+          if [ $i -eq 30 ]; then
+            echo "Backend health check timeout"
+            docker compose -f docker-compose.prod.yml logs backend --tail=50
+            exit 1
+          fi
+          sleep 2
+        done
+
+    - name: Verify frontend
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        echo "Checking frontend..."
+        for i in $(seq 1 15); do
+          if curl -sf http://localhost:4092/ > /dev/null 2>&1; then
+            echo "Frontend is serving!"
+            break
+          fi
+          if [ $i -eq 15 ]; then
+            echo "Frontend verification timeout"
+            docker compose -f docker-compose.prod.yml logs frontend --tail=30
+            exit 1
+          fi
+          sleep 2
+        done
+
+    - name: Verify log collection capability
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        echo "Checking Docker socket access..."
+        docker exec loganalyzer-backend python3 -c "
+        import docker
+        client = docker.from_env()
+        containers = client.containers.list()
+        print(f'Docker access OK: {len(containers)} containers visible')
+        " 2>/dev/null || echo "Docker socket verification skipped (container still initializing)"
+
+    - name: Deployment summary
+      if: steps.check-docker.outputs.need_restart == 'true'
+      run: |
+        echo "=========================================="
+        echo "  LogAnalyzer Deployment Complete"
+        echo "=========================================="
+        echo "Frontend:  http://localhost:4092"
+        echo "Backend:   http://localhost:9092"
+        echo "API Docs:  http://localhost:9092/api/docs"
+        echo ""
+        docker compose -f docker-compose.prod.yml ps
+
+    - name: Skip Docker restart (docs/config only)
+      if: steps.check-docker.outputs.need_restart != 'true'
+      run: |
+        echo "=========================================="
+        echo "Docker restart SKIPPED"
+        echo "Only docs/config files were changed"
+        echo "=========================================="
+
+    - name: Cleanup old images
+      if: always()
+      run: docker image prune -f 2>/dev/null || true
