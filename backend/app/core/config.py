@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://loganalyzer_svc:changeme@localhost:5432/loganalyzer"
 
+    # CORS
+    CORS_ORIGINS: str = "https://loganalyzer.unmong.com,http://localhost:4092"
+
     # Docker
     DOCKER_SOCKET: str = "/var/run/docker.sock"
     DOCKER_HOST_ALIAS: str = "host.docker.internal"
