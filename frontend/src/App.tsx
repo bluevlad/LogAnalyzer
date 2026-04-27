@@ -10,18 +10,19 @@ import DashboardPage from './pages/DashboardPage'
 import RequestsPage from './pages/RequestsPage'
 import ErrorsPage from './pages/ErrorsPage'
 import IntegrationPage from './pages/IntegrationPage'
+import GatewayLanding from './pages/gateway-landing/GatewayLanding'
 
 const { Header, Content, Sider } = Layout
 const { Title } = Typography
 
 const menuItems = [
-  { key: '/', icon: <DashboardOutlined />, label: '대시보드' },
+  { key: '/dashboard', icon: <DashboardOutlined />, label: '대시보드' },
   { key: '/requests', icon: <ApiOutlined />, label: 'Request 분석' },
   { key: '/errors', icon: <BugOutlined />, label: '오류 로그' },
   { key: '/integration', icon: <LinkOutlined />, label: '연동 관리' },
 ]
 
-function App() {
+function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -47,16 +48,21 @@ function App() {
             Docker Log Analysis Service
           </Title>
         </Header>
-        <Content style={{ margin: '24px', minHeight: 280 }}>
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/requests" element={<RequestsPage />} />
-            <Route path="/errors" element={<ErrorsPage />} />
-            <Route path="/integration" element={<IntegrationPage />} />
-          </Routes>
-        </Content>
+        <Content style={{ margin: '24px', minHeight: 280 }}>{children}</Content>
       </Layout>
     </Layout>
+  )
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<GatewayLanding />} />
+      <Route path="/dashboard" element={<ConsoleLayout><DashboardPage /></ConsoleLayout>} />
+      <Route path="/requests" element={<ConsoleLayout><RequestsPage /></ConsoleLayout>} />
+      <Route path="/errors" element={<ConsoleLayout><ErrorsPage /></ConsoleLayout>} />
+      <Route path="/integration" element={<ConsoleLayout><IntegrationPage /></ConsoleLayout>} />
+    </Routes>
   )
 }
 
