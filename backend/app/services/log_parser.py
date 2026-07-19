@@ -186,16 +186,17 @@ def parse_request_log(
             else:
                 rt = None
 
+            user_agent = d.get("user_agent")
             return RequestLog(
                 container_name=entry.container_name,
                 service_group=entry.service_group,
                 timestamp=entry.timestamp,
-                method=d["method"],
-                path=d["path"],
+                method=d["method"][:10],
+                path=d["path"][:512],
                 status_code=int(d["status"]),
                 response_time_ms=rt,
                 client_ip=d.get("client_ip"),
-                user_agent=d.get("user_agent"),
+                user_agent=user_agent[:512] if user_agent else None,
                 source_type=source_type,
             )
 
@@ -229,7 +230,7 @@ def _parse_json_request(entry: LogEntry, data: dict) -> RequestLog | None:
         status_code=status,
         response_time_ms=rt,
         client_ip=data.get("client_ip"),
-        user_agent=data.get("user_agent"),
+        user_agent=(str(data["user_agent"])[:512] if data.get("user_agent") else None),
         source_type="json",
     )
 
