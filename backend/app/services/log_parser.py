@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -127,8 +128,24 @@ IGNORE_PATTERNS = [
 ]
 
 
+# JSON 구조화 로그에서 무시할 요청 경로
+IGNORE_JSON_PATHS = {"/api/health", "/health", "/actuator/health", "/api/v1/health"}
+
+
 def _should_ignore(line: str) -> bool:
     return any(p.search(line) for p in IGNORE_PATTERNS)
+
+
+def _try_parse_json(line: str) -> dict | None:
+    """구조화(JSON Lines) 로그면 dict 반환, 아니면 None"""
+    stripped = line.lstrip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _generate_fingerprint(container: str, error_type: str, message: str) -> str:
@@ -148,6 +165,10 @@ def parse_request_log(
 
     if _should_ignore(line):
         return None
+
+    data = _try_parse_json(line)
+    if data is not None:
+        return _parse_json_request(entry, data)
 
     for source_type, pattern in REQUEST_PATTERNS:
         match = pattern.search(line)
@@ -181,6 +202,101 @@ def parse_request_log(
     return None
 
 
+def _parse_json_request(entry: LogEntry, data: dict) -> RequestLog | None:
+    """구조화 로그(event=http_request)에서 요청 정보 추출"""
+    if data.get("event") != "http_request":
+        return None
+
+    method = data.get("method")
+    path = data.get("path")
+    try:
+        status = int(data.get("status"))
+    except (ValueError, TypeError):
+        return None
+
+    if not method or not path or str(path) in IGNORE_JSON_PATHS:
+        return None
+
+    duration = data.get("duration_ms")
+    rt = float(duration) if isinstance(duration, (int, float)) else None
+
+    return RequestLog(
+        container_name=entry.container_name,
+        service_group=entry.service_group,
+        timestamp=entry.timestamp,
+        method=str(method)[:10],
+        path=str(path)[:512],
+        status_code=status,
+        response_time_ms=rt,
+        client_ip=data.get("client_ip"),
+        user_agent=data.get("user_agent"),
+        source_type="json",
+    )
+
+
+def _parse_json_error(entry: LogEntry, data: dict) -> ErrorLog | None:
+    """구조화 로그에서 오류 정보 추출"""
+    # 5xx 요청 로그는 500_error로 분류
+    if data.get("event") == "http_request":
+        try:
+            status = int(data.get("status"))
+        except (ValueError, TypeError):
+            return None
+        if status < 500:
+            return None
+        message = f'{data.get("method")} {data.get("path")} {status}'
+        return ErrorLog(
+            container_name=entry.container_name,
+            service_group=entry.service_group,
+            timestamp=entry.timestamp,
+            error_type="500_error",
+            severity=SEVERITY_MAP["500_error"],
+            message=message,
+            fingerprint=_generate_fingerprint(
+                entry.container_name, "500_error", message
+            ),
+        )
+
+    if entry.log_level not in ("ERROR", "FATAL", "SEVERE", "WARN"):
+        return None
+
+    msg = str(data.get("msg") or "")
+    exc_info = data.get("exc_info")
+    stack = str(exc_info)[:4000] if exc_info else None
+    search_text = f"{msg}\n{stack}" if stack else msg
+
+    for error_type, pattern in ERROR_PATTERNS.items():
+        if pattern.search(search_text):
+            return ErrorLog(
+                container_name=entry.container_name,
+                service_group=entry.service_group,
+                timestamp=entry.timestamp,
+                error_type=error_type,
+                severity=SEVERITY_MAP.get(error_type, "MEDIUM"),
+                message=msg[:2000],
+                stack_trace=stack,
+                fingerprint=_generate_fingerprint(
+                    entry.container_name, error_type, msg
+                ),
+            )
+
+    if entry.log_level in ("ERROR", "FATAL", "SEVERE"):
+        return ErrorLog(
+            container_name=entry.container_name,
+            service_group=entry.service_group,
+            timestamp=entry.timestamp,
+            error_type="unclassified",
+            severity="MEDIUM",
+            message=msg[:2000],
+            stack_trace=stack,
+            fingerprint=_generate_fingerprint(
+                entry.container_name, "unclassified", msg
+            ),
+        )
+
+    return None
+
+
 def parse_error_log(
     entry: LogEntry,
 ) -> ErrorLog | None:
@@ -189,6 +305,10 @@ def parse_error_log(
 
     if _should_ignore(line):
         return None
+
+    data = _try_parse_json(line)
+    if data is not None:
+        return _parse_json_error(entry, data)
 
     # ERROR/WARN 레벨이거나, stderr 스트림인 경우에만 오류 분석
     is_error_candidate = (

@@ -35,6 +35,7 @@ SERVICE_TO_REPO = {
     "StandUp": "bluevlad/StandUp",
     "InfraWatcher": "bluevlad/InfraWatcher",
     "NewsLetterPlatform": "bluevlad/NewsLetterPlatform",
+    "SkillRadar": "bluevlad/SkillRadar",
 }
 
 

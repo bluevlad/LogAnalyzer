@@ -107,6 +107,15 @@ class ErrorGroup(Base):
     )
 
 
+class CollectionState(Base):
+    """컨테이너별 마지막 수집 시점 (재시작 시 갭/중복 방지)"""
+    __tablename__ = "collection_state"
+
+    container_name = Column(String(128), primary_key=True)
+    last_collected_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class HourlyStats(Base):
     """시간별 집계"""
     __tablename__ = "hourly_stats"
