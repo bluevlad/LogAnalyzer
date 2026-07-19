@@ -384,43 +384,52 @@ def _update_error_group(db: Session, error: ErrorLog) -> None:
         error.group_id = group.id
 
 
-def parse_collected_logs(db: Session) -> dict:
-    """미파싱 로그를 분석하여 Request/Error 로그로 분류"""
-    unparsed = db.query(LogEntry).filter(
-        LogEntry.parsed == False  # noqa: E712
-    ).order_by(LogEntry.timestamp).limit(10000).all()
+def parse_collected_logs(db: Session, max_batches: int = 20) -> dict:
+    """미파싱 로그를 분석하여 Request/Error 로그로 분류
 
-    if not unparsed:
-        return {"requests": 0, "errors": 0, "total": 0}
-
+    배치(10,000건) 단위로 커밋하며, 백로그가 있으면 호출당 최대
+    max_batches 배치까지 드레인. 스케줄러 잡은 max_instances=1이라
+    실행 시간이 길어져도 중복 실행되지 않음.
+    """
     request_count = 0
     error_count = 0
+    total = 0
 
-    for entry in unparsed:
-        # Request 파싱 시도
-        request_log = parse_request_log(entry)
-        if request_log:
-            db.add(request_log)
-            request_count += 1
+    for _ in range(max_batches):
+        unparsed = db.query(LogEntry).filter(
+            LogEntry.parsed == False  # noqa: E712
+        ).order_by(LogEntry.timestamp).limit(10000).all()
 
-        # Error 파싱 시도 (request와 독립적)
-        error_log = parse_error_log(entry)
-        if error_log:
-            _update_error_group(db, error_log)
-            db.add(error_log)
-            error_count += 1
+        if not unparsed:
+            break
 
-        entry.parsed = True
+        for entry in unparsed:
+            # Request 파싱 시도
+            request_log = parse_request_log(entry)
+            if request_log:
+                db.add(request_log)
+                request_count += 1
 
-    db.commit()
+            # Error 파싱 시도 (request와 독립적)
+            error_log = parse_error_log(entry)
+            if error_log:
+                _update_error_group(db, error_log)
+                db.add(error_log)
+                error_count += 1
 
-    logger.info(
-        "Parsed %d logs: %d requests, %d errors",
-        len(unparsed), request_count, error_count,
-    )
+            entry.parsed = True
+
+        db.commit()
+        total += len(unparsed)
+
+    if total:
+        logger.info(
+            "Parsed %d logs: %d requests, %d errors",
+            total, request_count, error_count,
+        )
 
     return {
         "requests": request_count,
         "errors": error_count,
-        "total": len(unparsed),
+        "total": total,
     }
