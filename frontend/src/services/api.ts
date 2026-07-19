@@ -21,8 +21,8 @@ export const getTopEndpoints = (hours = 24, sortBy = 'count', limit = 20, servic
   api.get('/requests/top-endpoints', { params: { hours, sort_by: sortBy, limit, service } })
 export const getRequestTimeline = (hours = 24, service?: string) =>
   api.get('/requests/timeline', { params: { hours, service } })
-export const getSlowRequests = (hours = 24, thresholdMs = 1000, limit = 50) =>
-  api.get('/requests/slow', { params: { hours, threshold_ms: thresholdMs, limit } })
+export const getSlowRequests = (hours = 24, thresholdMs = 1000, limit = 50, service?: string) =>
+  api.get('/requests/slow', { params: { hours, threshold_ms: thresholdMs, limit, service } })
 
 // --- Errors ---
 export const getErrorSummary = (hours = 24, service?: string) =>

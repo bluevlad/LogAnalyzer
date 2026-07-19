@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     LOG_COLLECT_INTERVAL_MINUTES: int = 5
     LOG_RETENTION_DAYS: int = 30
     AGGREGATE_RETENTION_DAYS: int = 90
+    # 관리 대상 서비스 그룹 (콤마 구분) — 해당 그룹의 컨테이너만 수집. 빈 값이면 전체 수집
+    MANAGED_SERVICES: str = "AllergyInsight,SkillRadar,NewsLetterPlatform"
+
+    def managed_service_list(self) -> list[str]:
+        return [s.strip() for s in self.MANAGED_SERVICES.split(",") if s.strip()]
 
     # Integration - StandUp
     STANDUP_API_URL: str = "http://host.docker.internal:9060"

@@ -6,6 +6,7 @@ import {
 import {
   getRequestSummary, getRequestsByService, getTopEndpoints, getSlowRequests,
 } from '../services/api'
+import { SERVICE_FILTER_OPTIONS } from '../constants/services'
 
 interface RequestStats {
   total_requests: number
@@ -50,23 +51,29 @@ function RequestsPage() {
   const [slowReqs, setSlowReqs] = useState<SlowRequest[]>([])
   const [hours, setHours] = useState(24)
   const [sortBy, setSortBy] = useState('count')
+  const [service, setService] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
+    const svc = service || undefined
     Promise.all([
-      getRequestSummary(hours),
+      getRequestSummary(hours, svc),
       getRequestsByService(hours),
-      getTopEndpoints(hours, sortBy),
-      getSlowRequests(hours),
+      getTopEndpoints(hours, sortBy, 20, svc),
+      getSlowRequests(hours, 1000, 50, svc),
     ]).then(([summaryRes, serviceRes, endpointRes, slowRes]) => {
       setStats(summaryRes.data)
-      setServiceStats(serviceRes.data)
+      setServiceStats(
+        service
+          ? serviceRes.data.filter((s: any) => s.service_group === service)
+          : serviceRes.data,
+      )
       setEndpoints(endpointRes.data)
       setSlowReqs(slowRes.data)
     }).catch(console.error)
     .finally(() => setLoading(false))
-  }, [hours, sortBy])
+  }, [hours, sortBy, service])
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />
 
@@ -154,6 +161,12 @@ function RequestsPage() {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+        <Select
+          value={service}
+          onChange={setService}
+          style={{ width: 180 }}
+          options={SERVICE_FILTER_OPTIONS}
+        />
         <Select value={hours} onChange={setHours} style={{ width: 120 }}>
           <Select.Option value={1}>최근 1시간</Select.Option>
           <Select.Option value={6}>최근 6시간</Select.Option>

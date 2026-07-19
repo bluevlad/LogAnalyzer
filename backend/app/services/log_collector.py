@@ -171,9 +171,11 @@ def collect_all_logs(db: Session) -> int:
 
     watermarks = _load_watermarks(db)
 
+    managed = set(settings.managed_service_list())
     containers = [
         c for c in client.containers.list()
         if c.name not in EXCLUDE_CONTAINERS and c.status == "running"
+        and (not managed or get_service_group(c.name) in managed)
     ]
 
     total_lines = 0

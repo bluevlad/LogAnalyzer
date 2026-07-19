@@ -12,6 +12,7 @@ import {
   getErrorSummary, getErrorGroups, getErrorTypeStats, getErrorTimeline,
   updateErrorGroupStatus, createGithubIssue,
 } from '../services/api'
+import { SERVICE_FILTER_OPTIONS } from '../constants/services'
 
 interface ErrorSummary {
   total_errors: number
@@ -60,15 +61,17 @@ function ErrorsPage() {
   const [timeline, setTimeline] = useState<any[]>([])
   const [hours, setHours] = useState(24)
   const [statusFilter, setStatusFilter] = useState<string>('open')
+  const [service, setService] = useState('')
   const [loading, setLoading] = useState(true)
 
   const loadData = useCallback(() => {
     setLoading(true)
+    const svc = service || undefined
     Promise.all([
-      getErrorSummary(hours),
-      getErrorGroups({ status: statusFilter || undefined, sort_by: 'occurrence_count' }),
-      getErrorTypeStats(hours),
-      getErrorTimeline(hours),
+      getErrorSummary(hours, svc),
+      getErrorGroups({ status: statusFilter || undefined, service: svc, sort_by: 'occurrence_count' }),
+      getErrorTypeStats(hours, svc),
+      getErrorTimeline(hours, svc),
     ]).then(([sumRes, grpRes, typeRes, tlRes]) => {
       setSummary(sumRes.data)
       setGroups(grpRes.data)
@@ -76,7 +79,7 @@ function ErrorsPage() {
       setTimeline(tlRes.data)
     }).catch(console.error)
     .finally(() => setLoading(false))
-  }, [hours, statusFilter])
+  }, [hours, statusFilter, service])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -194,6 +197,12 @@ function ErrorsPage() {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+        <Select
+          value={service}
+          onChange={setService}
+          style={{ width: 180 }}
+          options={SERVICE_FILTER_OPTIONS}
+        />
         <Select value={hours} onChange={setHours} style={{ width: 120 }}>
           <Select.Option value={1}>최근 1시간</Select.Option>
           <Select.Option value={6}>최근 6시간</Select.Option>

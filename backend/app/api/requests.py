@@ -177,18 +177,23 @@ def get_request_timeline(
 @router.get("/requests/slow")
 def get_slow_requests(
     hours: int = Query(24, ge=1, le=720),
+    service: Optional[str] = None,
     threshold_ms: float = Query(1000, ge=100),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    rows = db.query(RequestLog).filter(
+    query = db.query(RequestLog).filter(
         and_(
             RequestLog.timestamp >= since,
             RequestLog.response_time_ms >= threshold_ms,
         )
-    ).order_by(
+    )
+    if service:
+        query = query.filter(RequestLog.service_group == service)
+
+    rows = query.order_by(
         RequestLog.response_time_ms.desc()
     ).limit(limit).all()
 
