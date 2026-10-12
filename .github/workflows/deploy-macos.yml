@@ -11,6 +11,14 @@ on:
       - '.github/**/*.md'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A second push waits for the running deploy instead of overlapping it.
+concurrency:
+  group: loganalyzer-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     name: Deploy LogAnalyzer to OrbStack
@@ -18,75 +26,82 @@ jobs:
 
     defaults:
       run:
-        working-directory: /Users/rainend/GIT/LogAnalyzer
         shell: bash
 
+    env:
+      # Pin the compose project so the runner workspace replaces the existing
+      # containers (originally started from the developer checkout).
+      COMPOSE_PROJECT_NAME: loganalyzer
+      COMPOSE_FILE: docker-compose.prod.yml
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+
     steps:
-    - name: Pull latest changes
-      run: |
-        git fetch origin prod
-        git checkout prod
-        git reset --hard origin/prod
+    # Build the pushed commit in the runner workspace. Do not reset a
+    # developer's checkout or replace its environment file.
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
 
-    - name: Check if Docker restart needed
+    - name: Connect runtime environment
+      run: |
+        test -n "$DEPLOY_PATH" || { echo "ERROR: repo variable DEPLOY_PATH is not set"; exit 1; }
+        test -f "$DEPLOY_PATH/.env" || { echo "ERROR: $DEPLOY_PATH/.env not found"; exit 1; }
+        ln -sfn "$DEPLOY_PATH/.env" .env
+
+    - name: Check if Docker rebuild needed
       id: check-docker
+      env:
+        BEFORE: ${{ github.event.before }}
       run: |
-        changed_files=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "FIRST_DEPLOY")
-        echo "Changed files:"
-        echo "$changed_files"
-
         need_restart=false
-        if [ "$changed_files" = "FIRST_DEPLOY" ]; then
+        if [ "${{ github.event_name }}" != "push" ] \
+          || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+          || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+          echo "Manual run, new branch or unknown base: full rebuild"
           need_restart=true
         else
-          for file in $changed_files; do
+          # Compare the whole push range, not just the last commit.
+          changed_files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          echo "Changed files:"
+          echo "$changed_files"
+          while IFS= read -r file; do
             case "$file" in
-              backend/*|frontend/*|docker-compose*.yml|Dockerfile*|.env*|requirements.txt|package.json)
+              backend/*|frontend/*|docker-compose*.yml|Dockerfile*)
                 need_restart=true
-                echo "Docker restart needed: $file"
+                echo "Docker rebuild needed: $file"
                 break
                 ;;
             esac
-          done
+          done <<< "$changed_files"
         fi
 
-        echo "Need Docker restart: $need_restart"
-        echo "need_restart=$need_restart" >> $GITHUB_OUTPUT
+        echo "Need Docker rebuild: $need_restart"
+        echo "need_restart=$need_restart" >> "$GITHUB_OUTPUT"
 
-    - name: Ensure shared PostgreSQL is running
+    - name: Ensure shared PostgreSQL and loganalyzer database
       if: steps.check-docker.outputs.need_restart == 'true'
       run: |
         docker exec postgresql pg_isready -U postgres || {
           echo "ERROR: Shared PostgreSQL container is not running"
           exit 1
         }
-
-    - name: Ensure loganalyzer database exists
-      if: steps.check-docker.outputs.need_restart == 'true'
-      run: |
         docker exec postgresql psql -U postgres -tc \
           "SELECT 1 FROM pg_database WHERE datname = 'loganalyzer'" | grep -q 1 || {
           echo "Creating loganalyzer database..."
           docker exec postgresql psql -U postgres -c "CREATE DATABASE loganalyzer;"
-          echo "Database created"
         }
-        # Ensure service account exists
+        # The service account must be provisioned manually with a real password.
         docker exec postgresql psql -U postgres -tc \
           "SELECT 1 FROM pg_roles WHERE rolname = 'loganalyzer_svc'" | grep -q 1 || {
-          echo "Creating loganalyzer_svc account..."
-          docker exec postgresql psql -U postgres -c "CREATE USER loganalyzer_svc WITH PASSWORD '${LA_DB_PASSWORD:-changeme}';"
-          docker exec postgresql psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE loganalyzer TO loganalyzer_svc;"
-          echo "Account created"
+          echo "ERROR: role loganalyzer_svc does not exist; create it to match LA_DATABASE_URL"
+          exit 1
         }
 
-    - name: Stop existing containers
-      if: steps.check-docker.outputs.need_restart == 'true'
-      run: docker compose -f docker-compose.prod.yml down --remove-orphans
-      continue-on-error: true
-
+    # `up --build` builds first and only then recreates changed containers,
+    # so the running service stays up during the image build.
     - name: Build and start containers
       if: steps.check-docker.outputs.need_restart == 'true'
-      run: docker compose -f docker-compose.prod.yml up -d --build
+      run: docker compose up -d --build --remove-orphans
 
     - name: Wait for backend health check
       if: steps.check-docker.outputs.need_restart == 'true'
@@ -100,7 +115,7 @@ jobs:
           fi
           if [ $i -eq 30 ]; then
             echo "Backend health check timeout"
-            docker compose -f docker-compose.prod.yml logs backend --tail=50
+            docker compose logs backend --tail=50
             exit 1
           fi
           sleep 2
@@ -117,7 +132,7 @@ jobs:
           fi
           if [ $i -eq 15 ]; then
             echo "Frontend verification timeout"
-            docker compose -f docker-compose.prod.yml logs frontend --tail=30
+            docker compose logs frontend --tail=30
             exit 1
           fi
           sleep 2
@@ -138,22 +153,22 @@ jobs:
       if: steps.check-docker.outputs.need_restart == 'true'
       run: |
         echo "=========================================="
-        echo "  LogAnalyzer Deployment Complete"
+        echo "  LogAnalyzer Deployment Complete ($GITHUB_SHA)"
         echo "=========================================="
         echo "Frontend:  http://localhost:4092"
         echo "Backend:   http://localhost:9092"
         echo "API Docs:  http://localhost:9092/api/docs"
         echo ""
-        docker compose -f docker-compose.prod.yml ps
+        docker compose ps
 
-    - name: Skip Docker restart (docs/config only)
+    - name: Skip Docker rebuild (no app changes)
       if: steps.check-docker.outputs.need_restart != 'true'
       run: |
         echo "=========================================="
-        echo "Docker restart SKIPPED"
-        echo "Only docs/config files were changed"
+        echo "Docker rebuild SKIPPED"
+        echo "No backend/frontend/compose changes in this push"
         echo "=========================================="
 
-    - name: Cleanup old images
+    - name: Cleanup dangling images
       if: always()
       run: docker image prune -f 2>/dev/null || true
