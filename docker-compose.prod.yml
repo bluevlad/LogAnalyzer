@@ -4,7 +4,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: loganalyzer-backend
-    restart: unless-stopped
+    restart: always
     ports:
       - "9092:9092"
     volumes:
@@ -31,7 +31,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: loganalyzer-frontend
-    restart: unless-stopped
+    restart: always
     ports:
       - "4092:4092"
     depends_on:
